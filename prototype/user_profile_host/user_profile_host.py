@@ -1,7 +1,7 @@
 import json
 import random
 import torch
-from diffusers import StableDiffusionPipeline
+from diffusers import StableDiffusionXLPipeline
 from functools import partial
 from nicegui import binding
 from sklearn.decomposition import PCA
@@ -34,8 +34,8 @@ class UserProfileHost():
             original_prompt: str,
             add_ons: list = None,
             recommendation_type: str = RecommendationType.RANDOM,
-            stable_dif_pipe: StableDiffusionPipeline = None,
-            hf_model_name: str = "stable-diffusion-v1-5/stable-diffusion-v1-5",
+            stable_dif_pipe: StableDiffusionXLPipeline = None,
+            hf_model_name: str = "stabilityai/stable-diffusion-xl-base-1.0",
             cache_dir: str = './cache/',
             n_embedding_axis: int = 13,
             use_embedding_center: bool = True,
@@ -52,7 +52,11 @@ class UserProfileHost():
             prompts_seed: int = 42,
             axis_style: str = 'ordered',
             latent_space_length: float = 15.00,
-            original_prompt_share=0.0
+            original_prompt_share=0.0,
+            # SDXL MIGRATION: was hardcoded to 512 (SD1.5 native res); now configurable since SDXL's
+            # native resolution is 1024.
+            height: int = 1024,
+            width: int = 1024,
     ):
         """
         This class is the main interface for the user profile host. It initializes the user profile host with the
@@ -80,10 +84,13 @@ class UserProfileHost():
         self.add_ons = add_ons
         self.recommendation_type = recommendation_type
         self.stable_dif_pipe = stable_dif_pipe
-        self.embedding_dim = 768
+        # SDXL MIGRATION: SD1.5's single CLIP-L encoder produced 768-dim per-token embeddings.
+        # SDXL concatenates CLIP-L (768-dim) and OpenCLIP-bigG (1280-dim) per-token hidden states,
+        # for a combined 2048-dim embedding (see clip_embedding()).
+        self.embedding_dim = 2048
         self.n_clip_tokens = 77
-        self.height = 512
-        self.width = 512
+        self.height = height
+        self.width = width
         self.latent_space_length = latent_space_length
         self.n_latent_axis = (
                     n_latent_axis * 2) if self.recommendation_type == RecommendationType.SIMPLE else n_latent_axis
@@ -126,19 +133,28 @@ class UserProfileHost():
 
         # Initialize tokenizer and text encoder to calculate CLIP embeddings
         if not self.stable_dif_pipe:
-            self.stable_dif_pipe = StableDiffusionPipeline.from_pretrained(
+            self.stable_dif_pipe = StableDiffusionXLPipeline.from_pretrained(
                 pretrained_model_name_or_path=hf_model_name,
                 cache_dir=cache_dir
             )
+        # SDXL MIGRATION: SDXL pipelines expose two tokenizer/text_encoder pairs (CLIP-L +
+        # OpenCLIP-bigG) instead of SD1.5's single pair. `self.tokenizer`/`self.text_encoder` keep
+        # pointing at the first (CLIP-L) pair since existing code below only uses them for
+        # `.dtype`/`.device`, which is the same across both encoders in practice.
         self.tokenizer = self.stable_dif_pipe.tokenizer
         self.text_encoder = self.stable_dif_pipe.text_encoder
+        self.tokenizer_2 = self.stable_dif_pipe.tokenizer_2
+        self.text_encoder_2 = self.stable_dif_pipe.text_encoder_2
 
         self.load_user_profile_host()
 
     def load_user_profile_host(self):
         print("Create new profile with prompt:", self.original_prompt)
         # Define the center of the user_space with the original prompt embedding
-        self.prompt_embedding = self.clip_embedding(self.original_prompt)
+        # SDXL MIGRATION: clip_embedding() now returns a (sequence_embedding, pooled_embedding)
+        # tuple instead of a single tensor; self.pooled_prompt_embedding is the center/fallback
+        # pooled vector used throughout inv_transform().
+        self.prompt_embedding, self.pooled_prompt_embedding = self.clip_embedding(self.original_prompt)
         self.embedding_length = torch.linalg.vector_norm(self.prompt_embedding, ord=2, dim=-1, keepdim=False)
         if not self.use_embedding_center:
             self.embedding_center = torch.zeros(size=(1, self.n_clip_tokens, self.embedding_dim))
@@ -264,56 +280,45 @@ class UserProfileHost():
             raise NotImplementedError()
 
         self.embedding_axis = []
+        # SDXL MIGRATION: parallel list of pooled embeddings, one per add-on prompt, used below to
+        # fit a second hyperspherical basis for pooled-embedding reconstruction.
+        self.pooled_embedding_axis = []
         # print('The embedding axis will consist of the following prompts:')
         for prompt in self.add_ons:
             # print(prompt)
-            self.embedding_axis.append(self.clip_embedding(prompt))
+            sequence_embedding, pooled_embedding = self.clip_embedding(prompt)
+            self.embedding_axis.append(sequence_embedding)
+            self.pooled_embedding_axis.append(pooled_embedding)
         self.embedding_axis = torch.stack(self.embedding_axis)
+        self.pooled_embedding_axis = torch.stack(self.pooled_embedding_axis)
 
         # Build user subspace parameters
         if self.recommendation_type in [RecommendationType.HYPERSPHERICAL_RANDOM,
                                         RecommendationType.HYPERSPHERICAL_MOVING_CENTER,
                                         RecommendationType.HYPERSPHERICAL_BAYESIAN]:
+            # SDXL MIGRATION: the naive `[:, -1, :]` indexing picks whatever sits at the final
+            # (77th) padded token position, which for prompts shorter than 77 tokens is a
+            # pad/EOS-repeat token, not necessarily a meaningful "summary" of the prompt. If you
+            # want the primary embedding axis to use the same validated summary-token technique
+            # applied to the pooled axis below (`attention_mask.sum(-1) - 2`), this is the place to
+            # change it — left as-is here since it wasn't part of the requested SDXL port.
             base_embeddings = self.embedding_axis[:, -1,
                               :].float().cpu().numpy()  # only keep the last token sequence step (which acts as a summary)
             n = base_embeddings.shape[0]  # n_embedding_axis
-            k = base_embeddings.shape[-1]  # CLIP dimension
+            k = base_embeddings.shape[-1]  # CLIP dimension (2048 for SDXL: 768 CLIP-L + 1280 OpenCLIP-bigG)
 
-            # Linear equations to compute the center of the circumscribed hypersphere.
-            # Conditions: The center C (in the CLIP space) lies on the hyperplane spanned by the base_embeddings
-            # (i.e. C can be (II) written as linear combination of some lambda_i of the base_embeddings
-            # with (I) sum of lambda_i = 1)
-            # and
-            # all points (base_embeddings) have equal distance from the center
-            # (i.e. (III) the same distance as the distance between base_embeddings_1 and the center).
-            # Equation (III) can be written as: For each embedding_axis i, ||x_i - C||^2 = ||x_1 - C||^2, and thus
-            # sum_j 2 (x_{1,j} - x_{i,j}) c_j = sum_j x_{1,j}^2 - sum_j x_{i,j}^2
-            # The following system A x = b gives this solution with x = [lambda_1 ... lambda_n c_1 ... c_k].
+            self.hyperspherical_center, self.hyperspherical_radius, self.hyperspherical_basis = \
+                self._fit_circumscribed_hypersphere(base_embeddings)
 
-            A = np.block([[np.ones([1, n]), np.zeros([1, k])],  # equation (I)
-                          [base_embeddings.T, - np.eye(k)],
-                          # equation (II), i.e. for each CLIP dimension: sum of lambda_i*x_i - c = 0
-                          [np.zeros([n - 1, n]),
-                           2 * (base_embeddings[0, np.newaxis] - base_embeddings[1:])]])  # equation (III)
-
-            b = np.concatenate([np.ones([1]),  # equation (I)
-                                np.zeros([k]),  # equation (II)
-                                (np.sum(base_embeddings[0] ** 2, axis=-1, keepdims=True)
-                                 - np.sum(base_embeddings[1:] ** 2, axis=-1,
-                                          keepdims=True)).flatten()])  # equation (III)
-
-            C = np.linalg.solve(A, b)[-k:]  # discard solutions for lambda and only get the solution for C
-
-            rel = base_embeddings - C  # move the base_embeddings by C so that their new center is 0 instead
-
-            # get orthonormal basis -> any linear combination with coefficients that have the sum of squares of 1
-            # will yield an admissible point on the circumscribed hypersphere
-            Q_, _ = np.linalg.qr(rel.T)
-
-            self.hyperspherical_center = torch.Tensor(C)
-            self.hyperspherical_radius = np.linalg.norm(base_embeddings[0] - C)
-            self.hyperspherical_basis = torch.Tensor(
-                Q_[:, :n - 1])  # discard one dimension since we are in a lower-dimensional user space
+            # SDXL MIGRATION: a second, parallel hyperspherical basis fit over the pooled-embedding
+            # axis (see clip_embedding()), so inv_transform() can reconstruct a pooled embedding for
+            # each recommendation using the SAME coefficients as the primary embedding — keeping
+            # the two semantically consistent. Only built/used for the HYPERSPHERICAL_* family;
+            # other recommender types fall back to a constant (center-prompt) pooled embedding in
+            # inv_transform().
+            pooled_base_embeddings = self.pooled_embedding_axis.float().cpu().numpy()
+            (self.hyperspherical_center_pooled, self.hyperspherical_radius_pooled,
+             self.hyperspherical_basis_pooled) = self._fit_circumscribed_hypersphere(pooled_base_embeddings)
 
             # Our user space only operates on the final token sequence step (out of the 77 tokens), which acts as a
             # summary of the whole token sequence. This means that we have to get back into the (batch x) 77 x 768
@@ -417,6 +422,64 @@ class UserProfileHost():
         else:
             raise ValueError(f"The recommendation type {self.recommendation_type} is not implemented yet.")
 
+    @staticmethod
+    def _fit_circumscribed_hypersphere(base_embeddings):
+        """
+        Fits the circumscribed hypersphere through `base_embeddings` (n_points, dim): finds the
+        center lying on their hyperplane and equidistant from all of them, plus an orthonormal
+        basis of the (dim-1)-dimensional hyperplane through that center.
+
+        SDXL MIGRATION: factored out of `load_user_profile_host` (the math itself is unchanged
+        from the original SD1.5 code) so the exact same fit can be run twice: once for the primary
+        (per-token) embedding axis, and once, in parallel, for the pooled-embedding axis introduced
+        for SDXL's `added_cond_kwargs`.
+
+        Parameters:
+            base_embeddings (np.ndarray): Array of shape (n, k) containing n summary vectors of
+                dimensionality k.
+        Returns:
+            center (Tensor), radius (float), basis (Tensor) of shape (k, n-1).
+        """
+        n = base_embeddings.shape[0]  # n_embedding_axis
+        k = base_embeddings.shape[-1]  # embedding dimension
+
+        # Linear equations to compute the center of the circumscribed hypersphere.
+        # Conditions: The center C (in the CLIP space) lies on the hyperplane spanned by the base_embeddings
+        # (i.e. C can be (II) written as linear combination of some lambda_i of the base_embeddings
+        # with (I) sum of lambda_i = 1)
+        # and
+        # all points (base_embeddings) have equal distance from the center
+        # (i.e. (III) the same distance as the distance between base_embeddings_1 and the center).
+        # Equation (III) can be written as: For each embedding_axis i, ||x_i - C||^2 = ||x_1 - C||^2, and thus
+        # sum_j 2 (x_{1,j} - x_{i,j}) c_j = sum_j x_{1,j}^2 - sum_j x_{i,j}^2
+        # The following system A x = b gives this solution with x = [lambda_1 ... lambda_n c_1 ... c_k].
+
+        A = np.block([[np.ones([1, n]), np.zeros([1, k])],  # equation (I)
+                      [base_embeddings.T, - np.eye(k)],
+                      # equation (II), i.e. for each CLIP dimension: sum of lambda_i*x_i - c = 0
+                      [np.zeros([n - 1, n]),
+                       2 * (base_embeddings[0, np.newaxis] - base_embeddings[1:])]])  # equation (III)
+
+        b = np.concatenate([np.ones([1]),  # equation (I)
+                            np.zeros([k]),  # equation (II)
+                            (np.sum(base_embeddings[0] ** 2, axis=-1, keepdims=True)
+                             - np.sum(base_embeddings[1:] ** 2, axis=-1,
+                                      keepdims=True)).flatten()])  # equation (III)
+
+        C = np.linalg.solve(A, b)[-k:]  # discard solutions for lambda and only get the solution for C
+
+        rel = base_embeddings - C  # move the base_embeddings by C so that their new center is 0 instead
+
+        # get orthonormal basis -> any linear combination with coefficients that have the sum of squares of 1
+        # will yield an admissible point on the circumscribed hypersphere
+        Q_, _ = np.linalg.qr(rel.T)
+
+        center = torch.Tensor(C)
+        radius = np.linalg.norm(base_embeddings[0] - C)
+        basis = torch.Tensor(Q_[:, :n - 1])  # discard one dimension since we are in a lower-dimensional user space
+
+        return center, radius, basis
+
     def inv_transform(self, user_embeddings: Tensor):
         """
         This function transforms embeddings in the user_space back into the clip embedding space.
@@ -426,6 +489,10 @@ class UserProfileHost():
 
         Returns
             clip_embeddings (Tensor): The respective clip embeddings.
+            pooled_embeddings (Tensor): SDXL MIGRATION: new return value. The respective pooled
+                embeddings, required by SDXL's `added_cond_kwargs`. See branch-level comments below
+                for how each recommender type derives (or falls back to a constant for) this value.
+            latents (Tensor): The respective latents.
         """
         if self.n_latent_axis:
             latent_factors = user_embeddings[:, -self.latent_axis.shape[0]:]
@@ -434,6 +501,11 @@ class UserProfileHost():
         # r = n_rec, a = n_axis, t = n_tokens, e = embedding_size
         if self.recommendation_type == RecommendationType.BASELINE:
             clip_embeddings = self.prompt_embedding.repeat(user_embeddings.shape[0], 1, 1)
+            # SDXL MIGRATION: constant pooled-embedding fallback — this recommender type only
+            # varies latents, not embeddings, so there's no coefficient scheme to interpolate a
+            # matching pooled vector with; we just reuse the center prompt's pooled embedding for
+            # every recommendation.
+            pooled_embeddings = self.pooled_prompt_embedding.repeat(user_embeddings.shape[0], 1)
         elif self.recommendation_type in [RecommendationType.HYPERSPHERICAL_RANDOM,
                                           RecommendationType.HYPERSPHERICAL_MOVING_CENTER,
                                           RecommendationType.HYPERSPHERICAL_BAYESIAN]:
@@ -447,6 +519,18 @@ class UserProfileHost():
             clip_embeddings = slerp(clip_embeddings, self.prompt_embedding.repeat(user_embeddings.shape[0], 1, 1),
                                     self.original_prompt_share) * torch.linalg.norm(self.prompt_embedding, dim=-1,
                                                                                     keepdim=True)
+
+            # SDXL MIGRATION: reconstruct the pooled embedding using the SAME per-recommendation
+            # coefficients (`user_embeddings`) through the parallel pooled hyperspherical basis
+            # fit in load_user_profile_host(), so it stays semantically consistent with the
+            # primary embedding above. No `get_full_text_embeddings` step is needed here since
+            # pooled vectors have no token dimension.
+            pooled_embeddings = (user_embeddings @ self.hyperspherical_basis_pooled.T
+                                 * self.hyperspherical_radius_pooled + self.hyperspherical_center_pooled)
+            pooled_embeddings = slerp(pooled_embeddings,
+                                     self.pooled_prompt_embedding.repeat(user_embeddings.shape[0], 1),
+                                     self.original_prompt_share) * torch.linalg.norm(self.pooled_prompt_embedding,
+                                                                                    dim=-1, keepdim=True)
         else:
             user_embeddings = user_embeddings.type(self.text_encoder.dtype)
             self.embedding_axis = self.embedding_axis.type(self.text_encoder.dtype)
@@ -455,6 +539,11 @@ class UserProfileHost():
             clip_embeddings = (self.embedding_center + product)
             clip_embeddings = (clip_embeddings / torch.linalg.vector_norm(clip_embeddings, ord=2, dim=-1, keepdim=True)
                                * embedding_length)
+            # SDXL MIGRATION: constant pooled-embedding fallback, see BASELINE branch above — this
+            # recommender family (RANDOM/EMA_DIRICHLET/etc.) doesn't have a hyperspherical basis to
+            # reuse coefficients through, so a proper per-recommendation pooled vector isn't
+            # derived here. Revisit if these recommender types end up being used for real runs.
+            pooled_embeddings = self.pooled_prompt_embedding.repeat(user_embeddings.shape[0], 1)
 
         latents = None
         if self.recommendation_type in [RecommendationType.HYPERSPHERICAL_RANDOM,
@@ -473,7 +562,7 @@ class UserProfileHost():
                 latents = (latents / torch.linalg.matrix_norm(latents, ord=2, dim=(-2, -1), keepdim=True)
                            * self.latent_space_length)
 
-        return clip_embeddings, latents
+        return clip_embeddings, pooled_embeddings, latents
 
     def fit_user_profile(self, preferences: Tensor):
         """
@@ -504,14 +593,49 @@ class UserProfileHost():
         Embeds a given prompt using CLIP.
 
         Returns:
-            embedding (Tensor) : An embedding for the prompt in shape (77, 768)
-        """
-        prompt_embeds = self.stable_dif_pipe.encode_prompt(prompt,
-                                                           device=self.text_encoder.device,
-                                                           num_images_per_prompt=1,
-                                                           do_classifier_free_guidance=False)[0].cpu()
+            sequence_embedding (Tensor): An embedding for the prompt in shape (77, 2048).
+            pooled_embedding (Tensor): A (1280,) pooled/summary embedding for the prompt.
 
-        return prompt_embeds.squeeze()
+        SDXL MIGRATION: previously this called `self.stable_dif_pipe.encode_prompt(...)` once and
+        returned its single (77, 768) sequence output. SDXL needs both encoders' per-token hidden
+        states concatenated (matching what the SDXL UNet expects as `encoder_hidden_states`), plus
+        a separate pooled vector for `added_cond_kwargs`. We tokenize/run both encoders manually
+        (rather than using `encode_prompt`) so the pooled vector can use the summary-token
+        extraction technique below instead of the encoder's own pooled/projected output.
+        """
+
+        def encode(tokenizer, text_encoder):
+            text_inputs = tokenizer(prompt, padding="max_length", max_length=tokenizer.model_max_length,
+                                    truncation=True, return_tensors="pt").to(text_encoder.device)
+            outputs = text_encoder(text_inputs.input_ids, output_hidden_states=True)
+            # penultimate hidden state, matching diffusers' own SDXL encode_prompt convention
+            sequence_states = outputs.hidden_states[-2].cpu()
+            # SDXL MIGRATION: summary-token extraction technique validated by the user in prior
+            # (SD1.5-based) research — take the last *real* (non-padding, pre-EOS) token position,
+            # i.e. the last token that received "fresh" real input, instead of blindly indexing the
+            # final padded position or using the encoder's built-in pooled output. This relies on
+            # CLIP's tokenizer convention (pad_token == eos_token, so `attention_mask` — not token
+            # id — is what marks real vs. padding tokens): `attention_mask.sum()-1` is the real EOS
+            # position, so `attention_mask.sum()-2` is the last real content token before it.
+            # `tokenizer_2` (OpenCLIP-bigG) is also a CLIPTokenizer using the same convention, so
+            # this is applied identically to both encoders here — but that assumption hasn't been
+            # verified against the actual loaded tokenizer_2 in this environment. Sanity-check once
+            # runnable, e.g. `tokenizer_2.decode(text_inputs.input_ids[0, summary_idx])` should be
+            # the last real word of the prompt, not `<|endoftext|>` or a pad token.
+            summary_idx = text_inputs.attention_mask.sum(dim=-1) - 2
+            summary_token = outputs.hidden_states[-2][torch.arange(sequence_states.shape[0]), summary_idx].cpu()
+            return sequence_states, summary_token
+
+        sequence_1, _ = encode(self.tokenizer, self.text_encoder)
+        sequence_2, summary_2 = encode(self.tokenizer_2, self.text_encoder_2)
+
+        sequence_embedding = torch.cat([sequence_1, sequence_2], dim=-1)
+        # SDXL MIGRATION: the pooled embedding is sourced from the second encoder (OpenCLIP-bigG,
+        # 1280-dim) only, matching the dimensionality SDXL's added_cond_kwargs/pooled_prompt_embeds
+        # expects (CLIP-L's 768-dim summary token would be the wrong shape).
+        pooled_embedding = summary_2
+
+        return sequence_embedding.squeeze(0), pooled_embedding.squeeze(0)
 
     def generate_recommendations(self, num_recommendations: int = 2):
         """
@@ -560,13 +684,18 @@ class UserProfileHost():
             # Generate respective clip embeddings (note that no inv-transformation is required here)
             print("The following prompts will be generated with various latents:")
             clip_embeddings = []
+            # SDXL MIGRATION: parallel list of pooled embeddings — clip_embedding() now returns a
+            # (sequence, pooled) tuple, see its docstring.
+            pooled_embeddings = []
             for i in range(num_recommendations):
                 prompt = self.image_styles[img_idx[i]] + self.original_prompt + self.secondary_contexts[sec_idx[i]] + \
                          self.atmospheric_attributes[at_idx[i]] + self.quality_terms[qual_idx[i]]
                 print(str(i + 1) + ":", prompt)
-                c_emb = self.clip_embedding(prompt)
+                c_emb, p_emb = self.clip_embedding(prompt)
                 clip_embeddings.append(c_emb)
+                pooled_embeddings.append(p_emb)
             clip_embeddings = torch.stack(clip_embeddings)
+            pooled_embeddings = torch.stack(pooled_embeddings)
 
             # For latents, simply select the respective latent from a list
             latents = self.latent_axis[lat_idx]
@@ -594,7 +723,7 @@ class UserProfileHost():
                 user_space_embeddings = self.random_recommender.recommend_embeddings(None, num_recommendations)
 
             # Transform embeddings from user_space to CLIP space
-            clip_embeddings, latents = self.inv_transform(user_space_embeddings)
+            clip_embeddings, pooled_embeddings, latents = self.inv_transform(user_space_embeddings)
 
             user_space_embeddings.type(self.text_encoder.dtype)
             # Safe the user_space_embeddings
@@ -605,7 +734,7 @@ class UserProfileHost():
 
         # Update Beta and return clip embeddings and latents for a generator to use
         self.beta = min(self.beta + self.beta_step_size, 1.)
-        return clip_embeddings, latents
+        return clip_embeddings, pooled_embeddings, latents
 
     def plotting_utils(self):
         """

@@ -63,6 +63,11 @@ class Recommender(ABC):  # ABC = Abstract Base Class
 
 
 class BaselineRecommender(Recommender):
+    # SDXL MIGRATION: no change needed — height/width/in_channels are already constructor params
+    # rather than hardcoded, so this picks up SDXL's 1024x1024 (and unchanged 4-channel latents)
+    # automatically via whatever UserProfileHost passes in. Note this recommender only produces
+    # latents, not embeddings, so it has no bearing on the new pooled-embedding handling
+    # (see UserProfileHost.inv_transform's BASELINE branch for that).
 
     def __init__(self, n_latent_axis, in_channels, height, width, init_noise_sigma, seed: int = 42):
         self.n_latent_axis = n_latent_axis

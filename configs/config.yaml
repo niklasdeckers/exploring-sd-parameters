@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - override hydra/hydra_logging: disabled  
+  - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 
 num_recommendations : 20
@@ -13,7 +13,13 @@ image_display_size : [256, 256]
 random_seed : 41
 generator_warm_start: False
 #hf_model_name: Lykon/dreamshaper-7
-hf_model_name: stable-diffusion-v1-5/stable-diffusion-v1-5
+#hf_model_name: stable-diffusion-v1-5/stable-diffusion-v1-5
+hf_model_name: stabilityai/stable-diffusion-xl-base-1.0
+
+# SDXL MIGRATION: SDXL's native resolution is 1024x1024 (vs. SD1.5's 512x512). Referenced from
+# both the `generator:` and `recommender:` sections below via YAML anchor/alias so Generator and
+# UserProfileHost (which both used to hardcode height=width=512) stay in sync.
+image_size: &image_size 1024
 
 generator:
   num_inference_steps : 4
@@ -21,6 +27,8 @@ generator:
   use_negative_prompt : False
   batch_size: 10
   initial_latent_seed: 42
+  height: *image_size
+  width: *image_size
 
 recommender:
   axis_style: ordered
@@ -36,7 +44,13 @@ recommender:
   initial_recommendation_seed: 44
   prompts_seed: 44
   latent_space_length: 15.8
-  original_prompt_share: 0.75 #0.0 for models like Lykon/dreamshaper-7, 0.75 for models like stable-diffusion-v1-5/stable-diffusion-v1-5
+  height: *image_size
+  width: *image_size
+  # SDXL MIGRATION: this value was tuned for SD1.5's single-encoder embedding geometry
+  # (0.0 for models like Lykon/dreamshaper-7, 0.75 for stable-diffusion-v1-5). SDXL's concatenated
+  # 2048-dim dual-encoder embedding space has different norm/distance properties, so this share
+  # will likely need to be re-tuned experimentally rather than reused as-is.
+  original_prompt_share: 0.75
 
 path:
   output_dir: ./output/

@@ -255,11 +255,13 @@ class WebUI:
         images of the generator in self.images.
         """
         print("Generate new Images.")
+        # SDXL MIGRATION: generate_recommendations() now returns an extra pooled_embeddings tensor
+        # (required by SDXL's added_cond_kwargs), threaded straight through to generate_image().
         if self.iteration < 2:
-            embeddings, latents = self.user_profile_host.generate_recommendations(num_recommendations=self.num_images_to_generate*self.first_iteration_images_factor)
+            embeddings, pooled_embeddings, latents = self.user_profile_host.generate_recommendations(num_recommendations=self.num_images_to_generate*self.first_iteration_images_factor)
         else:
-            embeddings, latents = self.user_profile_host.generate_recommendations(num_recommendations=self.num_images_to_generate)
-        self.images = self.generator.generate_image(embeddings, latents, self.loading_ui.loading_progress, self.queue_lock)
+            embeddings, pooled_embeddings, latents = self.user_profile_host.generate_recommendations(num_recommendations=self.num_images_to_generate)
+        self.images = self.generator.generate_image(embeddings, pooled_embeddings, latents, self.loading_ui.loading_progress, self.queue_lock)
 
     def update_image_displays(self):
         """
