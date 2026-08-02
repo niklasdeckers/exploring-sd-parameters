@@ -12,6 +12,134 @@ from .recommender import *
 from ..constants import RecommendationType
 
 
+def build_axis_prompts(axis_style: str, n_embedding_axis: int, original_prompt: str, image_styles: list,
+                        secondary_contexts: list, atmospheric_attributes: list, quality_terms: list,
+                        use_embedding_center: bool, rng: random.Random) -> list:
+    """
+    Builds the n_embedding_axis axis-prompts used to fit the hyperspherical basis for the user
+    profile space (see UserProfileHost.load_user_profile_host). Every axis_style must return
+    exactly n_embedding_axis prompts — a mismatch here silently propagates into a confusing
+    `mat1 and mat2 shapes cannot be multiplied` error deep inside inv_transform() instead, so the
+    fixed-template styles ('random'/'simple'/'complex') are checked explicitly below.
+    """
+    if axis_style == 'ordered':
+        return [
+            rng.choice(image_styles) + original_prompt + rng.choice(secondary_contexts) +
+            rng.choice(atmospheric_attributes) + rng.choice(quality_terms)
+            for _ in range(n_embedding_axis)
+        ]
+    elif axis_style == 'random':
+        templates = [
+            "A beautiful purple flower in a dark forest, in the style of hyper-realistic sculptures, with dark orange and green colors, set against post-apocalyptic backdrops with light red and yellow hues. it is displayed in museum gallery dioramas, featuring soft, dreamy scenes with an orange and green surreal 8k zbrush render.",
+            "Fluid abstract background, dark indigo, art, behance",
+            "hyperdetailed eyes, tee-shirt design, line art, black background, ultra detailed artistic, detailed gorgeous face, natural skin, water splash, colour splash art, fire and ice, splatter, black ink, liquid melting, dreamy, glowing, glamour, glimmer, shadows, oil on canvas, brush strokes, smooth, ultra high definition, 8k, unreal engine 5, ultra sharp focus, intricate artwork masterpiece, ominous, golden ratio, highly detailed, vibrant, production cinematic character render, ultra high quality model",
+            "Futuristic sci-fi pod chair, flat design, product-view, editorial photography",
+            "Cute girl behind window, rainy, photography surreal art, blurry, minimalistic",
+            "Shadowy figure of a woman emerging from the darkness, black and grey gradient, foggy, realistic, 8k resolution, unreal engine, cinematic",
+            "Old man standing next to a giant monster, in the style of contemporary vintage photography, necronomicon illustrations, tabletop photography, 1890, hyperrealistic animal portraits, ghostly presence, whirring contrivances",
+            "Victo ngai style",
+            "Detailed, vibrant illustration of a cowboy in the copper canyons the sierra of chihuahua state, by herge, in the style of tin-tin comics, vibrant colors, detailed, sunny day, attention to detail, 8k",
+            "Create a surreal desert with alien plants, the plants are shaped like canary_yellow_perlwhite, are partially transparent with tentacles and spines, in the sand laying pearls, backdrop is the storm of cosmic dust and cosmic clouds the heaven is dark colored unreal engine 6 color palette knives painting oel on canvas conzeptart, high qualty, cinema_stil, wide shot",
+            "beautiful field of flowers, colorful flowers everywhere, perfect lighting, leica summicron 35mm f2.0, kodak portra 400, film grain",
+            "A boy playing video games at night in his room, illustration by hergé, perfect coloring, 8k",
+            "Drawing of a cosmic extraterrestrial technology healing chamber, with many cables connecting the chamber to a large translucent transparent crystal. a body silhouette inside. ambient aircraft.",
+            "An intricate village made of psychedelic mushrooms, art by greg rutkowsk, 3d render",
+            "Some people look over tall building windows, in the style of dark hues, rural china, coded patterns, sparse and simple, uhd image, urbancore, sovietwave, negative space, award-winning design",
+            "Diesel-punk hip-hop punk ashigaru wearing diesel-punk oni armor. full body fighting pose. traditional wet ink and watercolor painting style. black, grey, red, and metallic gold ink. gestural speed paint by artgerm and jungshan. street fighter style.",
+            "A cute minimalistic simple capybara side profile, in the style of jon klassen, desaturated light and airy pastel color palette, nursery art, white background",
+            "black and red ink, a crane in chinese style, ink art by mschiffer, whimsical, rough sketch, (sketch1.3)",
+            "A cute cartoon girl in a dress holding a white kitten, full body, yellow background, keith haring style doodle, sharpie illustration, bold lines and solid colors, simple details, (((minimalism))), yellow background",
+            "Japanese animation, panoramic, colorful, a small corgi with closed eyes backstroke in the pool, most of the picture shows water, corgi accounts for a small part of the picture, water is light blue transparent and clear, water ripple texture is clear, light refraction, corgi and water are not fuzzy, in hd, phone wallpaper size, hd, 32k",
+            "Body portrait photography, in a smoke-filled office full of cables and wires and led, featuring a carbon motor head, an attractive transparent white plexiglass secretary robot reading an ancient book at her desk, 80-degree view. art by sergio lopez, natalie shau, james jean, and salvador dali."
+        ]
+        _assert_enough_templates(axis_style, templates, n_embedding_axis)
+        add_ons = templates[:n_embedding_axis]
+        # Include original prompt if not using the embedding center to remain the primary context
+        if not use_embedding_center:
+            add_ons = [original_prompt + ', ' + a for a in add_ons]
+        return add_ons
+    elif axis_style == 'simple':
+        templates = [
+            "in the style of a surreal oil painting",
+            "as a vintage photograph from the 1920s",
+            "drawn like a Studio Ghibli animation",
+            "rendered as hyper-realistic 3D CGI",
+            "in minimalist flat vector art style",
+            "as a charcoal sketch on parchment",
+            "in the aesthetic of vaporwave",
+            "painted in watercolor with soft pastel tones",
+            "illustrated like a medieval manuscript",
+            "as a pixel art scene from an 8-bit video game",
+            "set in a dense futuristic megacity",
+            "inside a sunlit forest clearing",
+            "floating above the clouds at golden hour",
+            "underwater in a bioluminescent reef",
+            "in a vast desert with ancient ruins",
+            "on a snowy mountain peak during a blizzard",
+            "on a distant alien planet with purple skies",
+            "in a neon-lit alleyway at midnight",
+            "at the bottom of a dark cave",
+            "inside a massive ancient library",
+            "during the last moments of a sunset",
+            "in a post-apocalyptic future",
+            "on a quiet early morning",
+            "in the distant future, year 4000",
+            "during a Renaissance-era festival",
+            "with an eerie, unsettling atmosphere",
+            "filled with joyous, playful energy",
+            "with a dreamlike, ethereal mood",
+            "with dark and mysterious undertones",
+            "evoking nostalgia and melancholy",
+            "bursting with chaotic and surreal energy",
+            "calm, serene, and meditative",
+            "exploring the theme of isolation",
+            "representing the passage of time",
+        ]
+        _assert_enough_templates(axis_style, templates, n_embedding_axis)
+        add_ons = templates[:n_embedding_axis]
+        # Include original prompt if not using the embedding center to remain the primary context
+        if not use_embedding_center:
+            add_ons = [original_prompt + ', ' + a for a in add_ons]
+        return add_ons
+    elif axis_style == 'complex':
+        templates = [
+            f"A beautiful purple flower in a dark forest, depicting {original_prompt}, in the style of hyper-realistic sculptures, with dark orange and green colors, set against post-apocalyptic backdrops with light red and yellow hues. It is displayed in museum gallery dioramas, featuring soft, dreamy scenes with an orange and green surreal 8k ZBrush render.",
+            f"Fluid abstract background featuring {original_prompt}, dark indigo palette, artistic textures, Behance-style presentation.",
+            f"Hyperdetailed artistic portrait of {original_prompt}, tee-shirt design, line art on black background, ultra detailed face, natural skin, water and colour splashes, fire and ice contrast, oil on canvas, brush strokes, vibrant and cinematic render with the golden ratio in ultra high definition, 8k Unreal Engine 5 quality.",
+            f"A futuristic sci-fi pod chair designed to accommodate {original_prompt}, flat design, product-view layout, editorial photography style.",
+            f"Cute girl behind window thinking about {original_prompt}, rainy scene, photography surreal art, blurry and minimalistic tones.",
+            f"Shadowy figure representing {original_prompt} emerging from the darkness, in a foggy and cinematic black and grey gradient, 8k resolution Unreal Engine render.",
+            f"An old man standing next to a giant monster, as a metaphor for {original_prompt}, in the style of contemporary vintage photography, Necronomicon illustrations, 1890 tabletop hyperrealistic animal portraiture.",
+            f"Victo Ngai’s visual interpretation of {original_prompt}, blending magical realism and intricate detailing.",
+            f"Detailed, vibrant illustration of a cowboy experiencing {original_prompt} in the copper canyons of Chihuahua, drawn in the style of Tintin comics by Hergé, 8k sunny detailed coloring.",
+            f"Create a surreal desert with alien plants embodying {original_prompt}, canary yellow and pearl white, partially transparent with tentacles, storm of cosmic dust in the background, painted with Unreal Engine 6 palette knives in cinematic concept art style.",
+            f"Beautiful field of flowers surrounding {original_prompt}, colorful bloom everywhere with perfect lighting, Leica Summicron 35mm f2.0, Kodak Portra 400, film grain aesthetics.",
+            f"A boy playing video games late at night, imagining {original_prompt}, drawn by Hergé in 8k coloring and comic style.",
+            f"A cosmic extraterrestrial healing chamber, inside which lies {original_prompt}, with translucent crystals and connecting ambient aircraft cables, ambient concept render.",
+            f"An intricate village made of psychedelic mushrooms where {original_prompt} lives, in the art style of Greg Rutkowski, 3D rendered.",
+            f"From a high-rise window, people witness {original_prompt} in rural China, designed with dark hues, sparse negative space, coded patterns, Sovietwave and urbancore elements, UHD.",
+            f"Diesel-punk hip-hop samurai version of {original_prompt}, wearing oni armor, posed mid-fight, painted in traditional wet ink and watercolor by Artgerm and Jungshan, with metallic gold and gestural brush strokes.",
+            f"A cute minimalistic capybara, side profile, accompanied by {original_prompt}, drawn in the pastel nursery art style of Jon Klassen with desaturated airy tones.",
+            f"A majestic crane soaring beside {original_prompt}, rendered in whimsical Chinese-style black and red ink by MSchiffer, rough sketch style.",
+            f"A cute cartoon girl in a dress holding a white kitten and a drawing of {original_prompt}, on a yellow background, Keith Haring doodle style, bold lines and solid colors.",
+            f"Japanese animation panoramic scene: a small corgi backstroking in a pool while {original_prompt} floats nearby, light blue water with ripples and transparent refraction, 32k HD phone wallpaper aesthetic.",
+            f"A body portrait photography scene inside a smoky LED-lit office, {original_prompt} portrayed as a transparent white plexiglass robot secretary reading an ancient book, viewed at 80 degrees. Art by Sergio Lopez, Natalie Shau, James Jean, Salvador Dalí."
+        ]
+        _assert_enough_templates(axis_style, templates, n_embedding_axis)
+        return templates[:n_embedding_axis]
+    else:
+        raise NotImplementedError()
+
+
+def _assert_enough_templates(axis_style: str, templates: list, n_embedding_axis: int) -> None:
+    if len(templates) < n_embedding_axis:
+        raise ValueError(
+            f"axis_style={axis_style!r} only has {len(templates)} hardcoded templates, which is "
+            f"fewer than n_embedding_axis={n_embedding_axis}. Lower n_embedding_axis to at most "
+            f"{len(templates)}, or choose a different axis_style."
+        )
+
+
 class UserProfileHost():
     original_prompt = binding.BindableProperty()
     recommendation_type = binding.BindableProperty()
@@ -171,113 +299,18 @@ class UserProfileHost():
         self.quality_terms = prompt_terms["quality_terms"]
 
         # Create Add ons with original prompt included at the semantically correct position
-        self.add_ons = []
         self.generator = random.Random(self.prompts_seed)
-        for _ in range(self.n_embedding_axis):
-            ao = self.generator.choice(self.image_styles) + self.original_prompt + self.generator.choice(
-                self.secondary_contexts) + self.generator.choice(self.atmospheric_attributes) + self.generator.choice(
-                self.quality_terms)
-            self.add_ons.append(ao)
-        if self.axis_style == 'ordered':
-            self.add_ons = []
-            for _ in range(self.n_embedding_axis):
-                ao = self.generator.choice(self.image_styles) + self.original_prompt + self.generator.choice(
-                    self.secondary_contexts) + self.generator.choice(
-                    self.atmospheric_attributes) + self.generator.choice(self.quality_terms)
-                self.add_ons.append(ao)
-        elif self.axis_style == 'random':
-            self.add_ons = [
-                               "A beautiful purple flower in a dark forest, in the style of hyper-realistic sculptures, with dark orange and green colors, set against post-apocalyptic backdrops with light red and yellow hues. it is displayed in museum gallery dioramas, featuring soft, dreamy scenes with an orange and green surreal 8k zbrush render.",
-                               "Fluid abstract background, dark indigo, art, behance",
-                               "hyperdetailed eyes, tee-shirt design, line art, black background, ultra detailed artistic, detailed gorgeous face, natural skin, water splash, colour splash art, fire and ice, splatter, black ink, liquid melting, dreamy, glowing, glamour, glimmer, shadows, oil on canvas, brush strokes, smooth, ultra high definition, 8k, unreal engine 5, ultra sharp focus, intricate artwork masterpiece, ominous, golden ratio, highly detailed, vibrant, production cinematic character render, ultra high quality model",
-                               "Futuristic sci-fi pod chair, flat design, product-view, editorial photography",
-                               "Cute girl behind window, rainy, photography surreal art, blurry, minimalistic",
-                               "Shadowy figure of a woman emerging from the darkness, black and grey gradient, foggy, realistic, 8k resolution, unreal engine, cinematic",
-                               "Old man standing next to a giant monster, in the style of contemporary vintage photography, necronomicon illustrations, tabletop photography, 1890, hyperrealistic animal portraits, ghostly presence, whirring contrivances",
-                               "Victo ngai style",
-                               "Detailed, vibrant illustration of a cowboy in the copper canyons the sierra of chihuahua state, by herge, in the style of tin-tin comics, vibrant colors, detailed, sunny day, attention to detail, 8k",
-                               "Create a surreal desert with alien plants, the plants are shaped like canary_yellow_perlwhite, are partially transparent with tentacles and spines, in the sand laying pearls, backdrop is the storm of cosmic dust and cosmic clouds the heaven is dark colored unreal engine 6 color palette knives painting oel on canvas conzeptart, high qualty, cinema_stil, wide shot",
-                               "beautiful field of flowers, colorful flowers everywhere, perfect lighting, leica summicron 35mm f2.0, kodak portra 400, film grain",
-                               "A boy playing video games at night in his room, illustration by hergé, perfect coloring, 8k",
-                               "Drawing of a cosmic extraterrestrial technology healing chamber, with many cables connecting the chamber to a large translucent transparent crystal. a body silhouette inside. ambient aircraft.",
-                               "An intricate village made of psychedelic mushrooms, art by greg rutkowsk, 3d render",
-                               "Some people look over tall building windows, in the style of dark hues, rural china, coded patterns, sparse and simple, uhd image, urbancore, sovietwave, negative space, award-winning design",
-                               "Diesel-punk hip-hop punk ashigaru wearing diesel-punk oni armor. full body fighting pose. traditional wet ink and watercolor painting style. black, grey, red, and metallic gold ink. gestural speed paint by artgerm and jungshan. street fighter style.",
-                               "A cute minimalistic simple capybara side profile, in the style of jon klassen, desaturated light and airy pastel color palette, nursery art, white background",
-                               "black and red ink, a crane in chinese style, ink art by mschiffer, whimsical, rough sketch, (sketch1.3)",
-                               "A cute cartoon girl in a dress holding a white kitten, full body, yellow background, keith haring style doodle, sharpie illustration, bold lines and solid colors, simple details, (((minimalism))), yellow background",
-                               "Japanese animation, panoramic, colorful, a small corgi with closed eyes backstroke in the pool, most of the picture shows water, corgi accounts for a small part of the picture, water is light blue transparent and clear, water ripple texture is clear, light refraction, corgi and water are not fuzzy, in hd, phone wallpaper size, hd, 32k",
-                               "Body portrait photography, in a smoke-filled office full of cables and wires and led, featuring a carbon motor head, an attractive transparent white plexiglass secretary robot reading an ancient book at her desk, 80-degree view. art by sergio lopez, natalie shau, james jean, and salvador dali."
-                           ][:self.n_embedding_axis]
-            # Include original prompt if not using the embedding center to remain the primary context
-            if not self.use_embedding_center:
-                self.add_ons = [self.original_prompt + ', ' + a for a in self.add_ons]
-        elif self.axis_style == 'simple':
-            self.add_ons = [
-                               "in the style of a surreal oil painting",
-                               "as a vintage photograph from the 1920s",
-                               "drawn like a Studio Ghibli animation",
-                               "rendered as hyper-realistic 3D CGI",
-                               "in minimalist flat vector art style",
-                               "as a charcoal sketch on parchment",
-                               "in the aesthetic of vaporwave",
-                               "painted in watercolor with soft pastel tones",
-                               "illustrated like a medieval manuscript",
-                               "as a pixel art scene from an 8-bit video game",
-                               "set in a dense futuristic megacity",
-                               "inside a sunlit forest clearing",
-                               "floating above the clouds at golden hour",
-                               "underwater in a bioluminescent reef",
-                               "in a vast desert with ancient ruins",
-                               "on a snowy mountain peak during a blizzard",
-                               "on a distant alien planet with purple skies",
-                               "in a neon-lit alleyway at midnight",
-                               "at the bottom of a dark cave",
-                               "inside a massive ancient library",
-                               "during the last moments of a sunset",
-                               "in a post-apocalyptic future",
-                               "on a quiet early morning",
-                               "in the distant future, year 4000",
-                               "during a Renaissance-era festival",
-                               "with an eerie, unsettling atmosphere",
-                               "filled with joyous, playful energy",
-                               "with a dreamlike, ethereal mood",
-                               "with dark and mysterious undertones",
-                               "evoking nostalgia and melancholy",
-                               "bursting with chaotic and surreal energy",
-                               "calm, serene, and meditative",
-                               "exploring the theme of isolation",
-                               "representing the passage of time",
-                           ][:self.n_embedding_axis]
-            # Include original prompt if not using the embedding center to remain the primary context
-            if not self.use_embedding_center:
-                self.add_ons = [self.original_prompt + ', ' + a for a in self.add_ons]
-        elif self.axis_style == 'complex':
-            self.add_ons = [
-                               f"A beautiful purple flower in a dark forest, depicting {self.original_prompt}, in the style of hyper-realistic sculptures, with dark orange and green colors, set against post-apocalyptic backdrops with light red and yellow hues. It is displayed in museum gallery dioramas, featuring soft, dreamy scenes with an orange and green surreal 8k ZBrush render.",
-                               f"Fluid abstract background featuring {self.original_prompt}, dark indigo palette, artistic textures, Behance-style presentation.",
-                               f"Hyperdetailed artistic portrait of {self.original_prompt}, tee-shirt design, line art on black background, ultra detailed face, natural skin, water and colour splashes, fire and ice contrast, oil on canvas, brush strokes, vibrant and cinematic render with the golden ratio in ultra high definition, 8k Unreal Engine 5 quality.",
-                               f"A futuristic sci-fi pod chair designed to accommodate {self.original_prompt}, flat design, product-view layout, editorial photography style.",
-                               f"Cute girl behind window thinking about {self.original_prompt}, rainy scene, photography surreal art, blurry and minimalistic tones.",
-                               f"Shadowy figure representing {self.original_prompt} emerging from the darkness, in a foggy and cinematic black and grey gradient, 8k resolution Unreal Engine render.",
-                               f"An old man standing next to a giant monster, as a metaphor for {self.original_prompt}, in the style of contemporary vintage photography, Necronomicon illustrations, 1890 tabletop hyperrealistic animal portraiture.",
-                               f"Victo Ngai’s visual interpretation of {self.original_prompt}, blending magical realism and intricate detailing.",
-                               f"Detailed, vibrant illustration of a cowboy experiencing {self.original_prompt} in the copper canyons of Chihuahua, drawn in the style of Tintin comics by Hergé, 8k sunny detailed coloring.",
-                               f"Create a surreal desert with alien plants embodying {self.original_prompt}, canary yellow and pearl white, partially transparent with tentacles, storm of cosmic dust in the background, painted with Unreal Engine 6 palette knives in cinematic concept art style.",
-                               f"Beautiful field of flowers surrounding {self.original_prompt}, colorful bloom everywhere with perfect lighting, Leica Summicron 35mm f2.0, Kodak Portra 400, film grain aesthetics.",
-                               f"A boy playing video games late at night, imagining {self.original_prompt}, drawn by Hergé in 8k coloring and comic style.",
-                               f"A cosmic extraterrestrial healing chamber, inside which lies {self.original_prompt}, with translucent crystals and connecting ambient aircraft cables, ambient concept render.",
-                               f"An intricate village made of psychedelic mushrooms where {self.original_prompt} lives, in the art style of Greg Rutkowski, 3D rendered.",
-                               f"From a high-rise window, people witness {self.original_prompt} in rural China, designed with dark hues, sparse negative space, coded patterns, Sovietwave and urbancore elements, UHD.",
-                               f"Diesel-punk hip-hop samurai version of {self.original_prompt}, wearing oni armor, posed mid-fight, painted in traditional wet ink and watercolor by Artgerm and Jungshan, with metallic gold and gestural brush strokes.",
-                               f"A cute minimalistic capybara, side profile, accompanied by {self.original_prompt}, drawn in the pastel nursery art style of Jon Klassen with desaturated airy tones.",
-                               f"A majestic crane soaring beside {self.original_prompt}, rendered in whimsical Chinese-style black and red ink by MSchiffer, rough sketch style.",
-                               f"A cute cartoon girl in a dress holding a white kitten and a drawing of {self.original_prompt}, on a yellow background, Keith Haring doodle style, bold lines and solid colors.",
-                               f"Japanese animation panoramic scene: a small corgi backstroking in a pool while {self.original_prompt} floats nearby, light blue water with ripples and transparent refraction, 32k HD phone wallpaper aesthetic.",
-                               f"A body portrait photography scene inside a smoky LED-lit office, {self.original_prompt} portrayed as a transparent white plexiglass robot secretary reading an ancient book, viewed at 80 degrees. Art by Sergio Lopez, Natalie Shau, James Jean, Salvador Dalí."
-                           ][:self.n_embedding_axis]
-        else:
-            raise NotImplementedError()
+        self.add_ons = build_axis_prompts(
+            axis_style=self.axis_style,
+            n_embedding_axis=self.n_embedding_axis,
+            original_prompt=self.original_prompt,
+            image_styles=self.image_styles,
+            secondary_contexts=self.secondary_contexts,
+            atmospheric_attributes=self.atmospheric_attributes,
+            quality_terms=self.quality_terms,
+            use_embedding_center=self.use_embedding_center,
+            rng=self.generator,
+        )
 
         self.embedding_axis = []
         # SDXL MIGRATION: parallel list of pooled embeddings, one per add-on prompt, used below to
