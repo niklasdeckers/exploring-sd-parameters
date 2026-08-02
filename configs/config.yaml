@@ -12,9 +12,19 @@ device: cuda
 image_display_size : [256, 256]
 random_seed : 41
 generator_warm_start: False
-#hf_model_name: Lykon/dreamshaper-7
-#hf_model_name: stable-diffusion-v1-5/stable-diffusion-v1-5
-hf_model_name: stabilityai/stable-diffusion-xl-base-1.0
+#hf_model_name: Lykon/dreamshaper-7  # SD1.5 single-encoder community checkpoint, 512x512 native
+#hf_model_name: stable-diffusion-v1-5/stable-diffusion-v1-5  # base SD1.5, single text encoder, 512x512 native
+#hf_model_name: stabilityai/stable-diffusion-xl-base-1.0  # full-size base SDXL: best quality/highest VRAM (~7.85GB bf16 UNet+encoders alone, ~13GB peak with generator.batch_size:4 below); pair with generator.lora_name: latent-consistency/lcm-lora-sdxl
+hf_model_name: segmind/SSD-1B  # SDXL distilled to ~50% smaller UNet: visible quality drop, ~10.6GB peak unquantized; pair with generator.lora_name: latent-consistency/lcm-lora-ssd-1b
+#hf_model_name: segmind/Segmind-Vega  # SDXL distilled to ~70% smaller UNet: more aggressive quality drop than SSD-1B, not yet profiled here; pair with generator.lora_name: segmind/Segmind-VegaRT
+
+# QUANTIZATION: bitsandbytes quantization applied to the UNet only (VAE/text encoders are already
+# small enough that diffusers' own docs say not to bother). Requires the `bitsandbytes` package
+# (see requirements.txt). Measured on segmind/SSD-1B + latent-consistency/lcm-lora-ssd-1b at
+# generator.batch_size: 4, on an H100.
+#quantize_unet: null  # no quantization, full bf16 UNet, LoRA gets fused: best quality/speed, highest VRAM (~10.6GB with SSD-1B above)
+#quantize_unet: "8bit"  # bitsandbytes int8 (LLM.int8()): only modest VRAM savings (~9.2GB) and noticeably slower than 4bit below since the LoRA can no longer be fused into quantized weights; needs GPU compute capability >= 7.5 (Turing+)
+quantize_unet: "4bit"  # bitsandbytes NF4: best VRAM/speed/quality trade-off found so far (~8.9GB); needs GPU compute capability >= 6.0 (Pascal+)
 
 # SDXL MIGRATION: SDXL's native resolution is 1024x1024 (vs. SD1.5's 512x512). Referenced from
 # both the `generator:` and `recommender:` sections below via YAML anchor/alias so Generator and
@@ -25,6 +35,9 @@ generator:
   num_inference_steps : 4
   guidance_scale: 0.0
   use_negative_prompt : False
+  #lora_name: latent-consistency/lcm-lora-sdxl  # matches hf_model_name: stabilityai/stable-diffusion-xl-base-1.0
+  lora_name: latent-consistency/lcm-lora-ssd-1b  # matches hf_model_name: segmind/SSD-1B
+  #lora_name: segmind/Segmind-VegaRT  # matches hf_model_name: segmind/Segmind-Vega
   batch_size: 4
   initial_latent_seed: 42
   height: *image_size

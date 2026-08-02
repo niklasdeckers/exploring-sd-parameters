@@ -44,6 +44,7 @@ class Generator(GeneratorBase):
     def __init__(self,
                  batch_size: int = None,
                  hf_model_name: str = "stabilityai/stable-diffusion-xl-base-1.0",
+                 lora_name: str = "latent-consistency/lcm-lora-sdxl",
                  cache_dir: str | None = '/cache/',
                  num_inference_steps: int = 20,
                  device: str = 'cuda',
@@ -97,10 +98,14 @@ class Generator(GeneratorBase):
         # SDXL MIGRATION: swapped to the SDXL-specific LCM-LoRA. The SD1.5 LoRA
         # ("latent-consistency/lcm-lora-sdv1-5") targets the single-encoder/768-dim UNet
         # cross-attention layers and is not compatible with SDXL's UNet.
-        self.pipe.load_lora_weights(
-            "latent-consistency/lcm-lora-sdxl"
-        )
-        pipe.fuse_lora()
+        self.pipe.load_lora_weights(lora_name)
+        # QUANTIZATION: fusing a LoRA adapter into bitsandbytes-quantized (int8) weights is
+        # unsupported/error-prone (diffusers issue #10550, #10492) since the merge needs floating
+        # point weights. A quantized UNet keeps the LoRA adapter unfused instead — PEFT still
+        # applies it correctly at inference, just as a separate low-rank pass alongside the frozen
+        # quantized base weights.
+        if not getattr(self.pipe.unet, "is_quantized", False):
+            pipe.fuse_lora()
 
         # self.pipe.unet = torch.compile(self.pipe.unet, backend="cudagraphs")
 
