@@ -646,15 +646,17 @@ class UserProfileHost():
             # SDXL MIGRATION: summary-token extraction technique validated by the user in prior
             # (SD1.5-based) research — take the last *real* (non-padding, pre-EOS) token position,
             # i.e. the last token that received "fresh" real input, instead of blindly indexing the
-            # final padded position or using the encoder's built-in pooled output. This relies on
-            # CLIP's tokenizer convention (pad_token == eos_token, so `attention_mask` — not token
-            # id — is what marks real vs. padding tokens): `attention_mask.sum()-1` is the real EOS
-            # position, so `attention_mask.sum()-2` is the last real content token before it.
-            # `tokenizer_2` (OpenCLIP-bigG) is also a CLIPTokenizer using the same convention, so
-            # this is applied identically to both encoders here — but that assumption hasn't been
-            # verified against the actual loaded tokenizer_2 in this environment. Sanity-check once
-            # runnable, e.g. `tokenizer_2.decode(text_inputs.input_ids[0, summary_idx])` should be
-            # the last real word of the prompt, not `<|endoftext|>` or a pad token.
+            # final padded position or using the encoder's built-in pooled output. `attention_mask`
+            # (not token id) is what marks real vs. padding tokens, so `attention_mask.sum()-1` is
+            # the real EOS position and `attention_mask.sum()-2` is the last real content token
+            # before it. Verified directly (2026-08-02) against both loaded tokenizers via
+            # `tokenizer_2.decode(text_inputs.input_ids[0, summary_idx])` for short prompts and a
+            # 100-token prompt that forces truncation — correctly resolves to the last real word in
+            # all cases, not `<|endoftext|>` or padding, for both encoders. Note this holds despite
+            # `tokenizer_2` (OpenCLIP-bigG) NOT sharing `tokenizer`'s pad_token==eos_token identity
+            # (tokenizer_2.pad_token is `'!'`/id 0, distinct from its `<|endoftext|>` eos_token) —
+            # the formula only depends on attention_mask correctly flagging real-vs-padded
+            # positions, which holds for both tokenizers regardless of the specific pad token used.
             summary_idx = text_inputs.attention_mask.sum(dim=-1) - 2
             summary_token = outputs.hidden_states[-2][torch.arange(sequence_states.shape[0]), summary_idx].cpu()
             return sequence_states, summary_token
