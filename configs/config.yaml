@@ -38,7 +38,7 @@ generator:
   #lora_name: latent-consistency/lcm-lora-sdxl  # matches hf_model_name: stabilityai/stable-diffusion-xl-base-1.0
   lora_name: latent-consistency/lcm-lora-ssd-1b  # matches hf_model_name: segmind/SSD-1B
   #lora_name: segmind/Segmind-VegaRT  # matches hf_model_name: segmind/Segmind-Vega
-  batch_size: 4
+  batch_size: 2
   initial_latent_seed: 42
   height: *image_size
   width: *image_size

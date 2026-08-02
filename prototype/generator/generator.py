@@ -1,12 +1,16 @@
 import logging
 import time
+import numpy as np
 import torch
+from PIL import Image as PILImage
 from PIL.Image import Image
 from abc import abstractmethod, ABC
 from diffusers import StableDiffusionXLPipeline, AutoencoderTiny, AutoencoderKL, LCMScheduler
+from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from functools import partial
 from nicegui import binding
 from torch import Tensor
+from transformers import CLIPImageProcessor
 
 
 
@@ -119,6 +123,16 @@ class Generator(GeneratorBase):
         except:
             logging.warning("Cannot use xformers memory efficient attention (maybe xformers not installed)")
 
+        # SAFETY CHECKER: StableDiffusionXLPipeline has no built-in safety_checker component (see
+        # note above), so NSFW filtering is applied explicitly here as a post-generation step,
+        # reusing the same CLIP-based checker the SD1.5 pipeline used to run internally.
+        self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(
+            "CompVis/stable-diffusion-safety-checker"
+        ).to(device=self.device)
+        self.safety_feature_extractor = CLIPImageProcessor.from_pretrained(
+            "CompVis/stable-diffusion-safety-checker"
+        )
+
         self.negative_prompt_embeds = None
         self.negative_pooled_prompt_embed = None
         self.negative_prompt = ""
@@ -139,6 +153,23 @@ class Generator(GeneratorBase):
                 do_classifier_free_guidance=True,
                 negative_prompt=self.negative_prompt,
             )
+
+    @torch.no_grad()
+    def run_safety_checker(self, images: list[Image]) -> list[Image]:
+        """
+        Replaces any image flagged as NSFW by the CLIP-based safety checker with a blacked-out
+        image, keeping the list the same length/order so it still lines up 1:1 with the
+        embeddings that produced it (the recommender relies on that alignment for scoring).
+        """
+        safety_checker_input = self.safety_feature_extractor(images, return_tensors="pt").to(self.device)
+        images_np = np.stack([np.array(image).astype(np.float32) / 255.0 for image in images])
+        checked_images_np, has_nsfw_concept = self.safety_checker(
+            images=images_np,
+            clip_input=safety_checker_input.pixel_values,
+        )
+        if any(has_nsfw_concept):
+            logging.warning(f"Safety checker flagged {sum(has_nsfw_concept)} image(s); blacked out.")
+        return [PILImage.fromarray((image * 255).round().astype("uint8")) for image in checked_images_np]
 
     @torch.no_grad()
     def generate_image(self, embeddings: Tensor, pooled_embeddings: Tensor, latents: Tensor, loading_progress,
@@ -198,6 +229,7 @@ class Generator(GeneratorBase):
 
             result = queue_lock.do_work(task)
             images.extend(result.result())
+        images = self.run_safety_checker(images)
         self.latest_images.extend(images)
         return images
 
