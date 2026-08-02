@@ -14,8 +14,8 @@ random_seed : 41
 generator_warm_start: False
 #hf_model_name: Lykon/dreamshaper-7  # SD1.5 single-encoder community checkpoint, 512x512 native
 #hf_model_name: stable-diffusion-v1-5/stable-diffusion-v1-5  # base SD1.5, single text encoder, 512x512 native
-#hf_model_name: stabilityai/stable-diffusion-xl-base-1.0  # full-size base SDXL: best quality/highest VRAM (~7.85GB bf16 UNet+encoders alone, ~13GB peak with generator.batch_size:4 below); pair with generator.lora_name: latent-consistency/lcm-lora-sdxl
-hf_model_name: segmind/SSD-1B  # SDXL distilled to ~50% smaller UNet: visible quality drop, ~10.6GB peak unquantized; pair with generator.lora_name: latent-consistency/lcm-lora-ssd-1b
+hf_model_name: stabilityai/stable-diffusion-xl-base-1.0  # full-size base SDXL: best quality/highest VRAM (~7.85GB bf16 UNet+encoders alone, ~13GB peak with generator.batch_size:4 below); pair with generator.lora_name: latent-consistency/lcm-lora-sdxl and recommender.original_prompt_share: 0.5
+#hf_model_name: segmind/SSD-1B  # SDXL distilled to ~50% smaller UNet: visible quality drop (confirmed reproducible even unquantized, e.g. blotchy/inconsistent fur texture artifacts) unless kept close to the prompt; pair with generator.lora_name: latent-consistency/lcm-lora-ssd-1b and recommender.original_prompt_share: 0.75
 #hf_model_name: segmind/Segmind-Vega  # SDXL distilled to ~70% smaller UNet: more aggressive quality drop than SSD-1B, not yet profiled here; pair with generator.lora_name: segmind/Segmind-VegaRT
 
 # QUANTIZATION: bitsandbytes quantization applied to the UNet only (VAE/text encoders are already
@@ -35,10 +35,10 @@ generator:
   num_inference_steps : 4
   guidance_scale: 0.0
   use_negative_prompt : False
-  #lora_name: latent-consistency/lcm-lora-sdxl  # matches hf_model_name: stabilityai/stable-diffusion-xl-base-1.0
-  lora_name: latent-consistency/lcm-lora-ssd-1b  # matches hf_model_name: segmind/SSD-1B
+  lora_name: latent-consistency/lcm-lora-sdxl  # matches hf_model_name: stabilityai/stable-diffusion-xl-base-1.0
+  #lora_name: latent-consistency/lcm-lora-ssd-1b  # matches hf_model_name: segmind/SSD-1B
   #lora_name: segmind/Segmind-VegaRT  # matches hf_model_name: segmind/Segmind-Vega
-  batch_size: 2
+  batch_size: 4
   initial_latent_seed: 42
   height: *image_size
   width: *image_size
@@ -63,7 +63,12 @@ recommender:
   # (0.0 for models like Lykon/dreamshaper-7, 0.75 for stable-diffusion-v1-5). SDXL's concatenated
   # 2048-dim dual-encoder embedding space has different norm/distance properties, so this share
   # will likely need to be re-tuned experimentally rather than reused as-is.
-  original_prompt_share: 0.75
+  # Re-tuned values found by testing (2026-08-02): use 0.5 with hf_model_name:
+  # stabilityai/stable-diffusion-xl-base-1.0 (good quality + variety at this value). If using
+  # hf_model_name: segmind/SSD-1B instead, use 0.75 — SSD-1B's distilled UNet produces visibly
+  # degraded/malformed results at lower shares, seemingly less robust to the wider variety of
+  # axis prompts explored at lower values than full SDXL is.
+  original_prompt_share: 0.5
 
 path:
   output_dir: ./output/
