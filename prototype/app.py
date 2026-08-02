@@ -52,16 +52,18 @@ class App:
             cache_dir=global_args.path.cache_dir,
             torch_dtype=torch.bfloat16,
         ).to(device=self.device)
+        pipe.vae.enable_tiling()
+        pipe.vae.enable_slicing()
 
         # SDXL MIGRATION: the larger SDXL UNet takes noticeably more VRAM and compile time under
         # torch.compile than SD1.5's; re-check memory headroom (especially with batch_size=10).
-        pipe.unet = torch.compile(pipe.unet, backend="cudagraphs")
+        # pipe.unet = torch.compile(pipe.unet, backend="cudagraphs")
         # SDXL MIGRATION: the SD1.5-specific "stabilityai/sd-vae-ft-mse" VAE swap was dropped — it
         # is a checkpoint fine-tuned for (and only numerically valid with) SD1.5's latent space.
         # We now just keep + compile the VAE bundled with the SDXL pipeline checkpoint instead of
         # swapping in a separate one. If VAE instability shows up under bfloat16 (a known issue
         # with the stock SDXL VAE), consider pointing at "madebyollin/sdxl-vae-fp16-fix" here.
-        pipe.vae = torch.compile(pipe.vae, backend="cudagraphs")
+        # pipe.vae = torch.compile(pipe.vae, backend="cudagraphs")
 
         global generator
         generator = Generator(
@@ -78,5 +80,5 @@ class App:
         """
         global global_args
         ngUI.run(title='Image Generation System Demo', port=global_args.port,
-                 reconnect_timeout=global_args.reconnect_timeout)
+                 reconnect_timeout=global_args.reconnect_timeout, reload=False)
         start()

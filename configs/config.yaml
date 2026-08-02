@@ -25,7 +25,7 @@ generator:
   num_inference_steps : 4
   guidance_scale: 0.0
   use_negative_prompt : False
-  batch_size: 10
+  batch_size: 4
   initial_latent_seed: 42
   height: *image_size
   width: *image_size
