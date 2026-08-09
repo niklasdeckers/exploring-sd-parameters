@@ -173,7 +173,7 @@ class UserProfileHost():
             include_random_recommendations: bool = False,
             ema_alpha: float = 0.5,
             beta: float = 0.3,
-            beta_step_size: float = 0.1,
+            beta_step_size: float = 0.2,
             latent_axes_seed: int = 42,
             recommendation_seed: int = 42,
             initial_recommendation_seed: int = 43,
