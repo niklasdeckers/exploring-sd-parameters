@@ -154,6 +154,7 @@ class UserProfileHost():
     ema_alpha = binding.BindableProperty()
     beta = binding.BindableProperty()
     beta_step_size = binding.BindableProperty()
+    local_search_fraction = binding.BindableProperty()
     include_random_rec = binding.BindableProperty()
 
     # TODO: Group together Recommender Args and just pass them to the recommender, should simplyfy this arg list
@@ -173,7 +174,8 @@ class UserProfileHost():
             include_random_recommendations: bool = False,
             ema_alpha: float = 0.5,
             beta: float = 0.3,
-            beta_step_size: float = 0.1,
+            beta_step_size: float = 0.2,
+            local_search_fraction: float = 0.5,
             latent_axes_seed: int = 42,
             recommendation_seed: int = 42,
             initial_recommendation_seed: int = 43,
@@ -206,6 +208,9 @@ class UserProfileHost():
         :param beta: Trade-off between exploration and exploitation. Must be in [0, 1]. 0 means exploration, 1 means
             exploitation. Beta is increased after each recommendation (i.e. more exploitation).
         :param beta_step_size: The step size for the beta increase.
+        :param local_search_fraction: Only used by the HYPERSPHERICAL_BAYESIAN recommender. Fraction (in [0, 1]) of
+            each round's candidate pool sampled locally around the best-rated point so far, rather than uniformly at
+            random over the whole sphere. 0. disables local sampling entirely (search stays fully global/random).
         """
         # Some Clip Hyperparameters
         self.original_prompt = original_prompt
@@ -229,6 +234,7 @@ class UserProfileHost():
         self.ema_alpha = ema_alpha
         self.beta = min(beta, 1.)
         self.beta_step_size = beta_step_size
+        self.local_search_fraction = local_search_fraction
         self.include_random_rec = include_random_recommendations
         self.axis_style = axis_style
         self.latent_axes_seed = latent_axes_seed
@@ -244,6 +250,7 @@ class UserProfileHost():
         # Check for valid values
         assert self.beta >= 0., "Beta should be in range [0., 1.]"
         assert self.beta_step_size >= 0. and self.beta_step_size < 1., "Beta Step Size should be in [0., 1.]"
+        assert 0. <= self.local_search_fraction <= 1., "Local Search Fraction should be in range [0., 1.]"
 
         # Placeholder for the already evaluated embeddings of the current user
         self.embeddings = None
@@ -450,7 +457,8 @@ class UserProfileHost():
         elif self.recommendation_type == RecommendationType.HYPERSPHERICAL_BAYESIAN:
             self.recommender = HypersphericalBayesianRecommender(n_embedding_axis=self.n_embedding_axis - 1,
                                                                  n_latent_axis=self.n_latent_axis,
-                                                                 seed=self.recommendation_seed)
+                                                                 seed=self.recommendation_seed,
+                                                                 local_search_fraction=self.local_search_fraction)
             self.optimizer = NoOptimizer()
         else:
             raise ValueError(f"The recommendation type {self.recommendation_type} is not implemented yet.")
@@ -513,15 +521,21 @@ class UserProfileHost():
 
         return center, radius, basis
 
-    def inv_transform(self, user_embeddings: Tensor):
+    def inv_transform(self, user_embeddings: Tensor, compute_sequence_embeddings: bool = True):
         """
         This function transforms embeddings in the user_space back into the clip embedding space.
 
         Parameters:
             user_embeddings (Tensor): Parameters concerning the initially defined axis of a user_embedding.
+            compute_sequence_embeddings (bool): The HYPERSPHERICAL_* branch's `clip_embeddings`
+                (the full 77-token sequence embedding) requires expanding to (n_rec, 77, 2048) and
+                running `slerp` over that -- expensive, and unlike `pooled_embeddings`, not needed
+                by callers that only care about the pooled vector (e.g. check_empirical_reach).
+                Set to False to skip it; `clip_embeddings` is then returned as None.
 
         Returns
-            clip_embeddings (Tensor): The respective clip embeddings.
+            clip_embeddings (Tensor): The respective clip embeddings, or None if
+                `compute_sequence_embeddings` is False (only supported for HYPERSPHERICAL_* types).
             pooled_embeddings (Tensor): SDXL MIGRATION: new return value. The respective pooled
                 embeddings, required by SDXL's `added_cond_kwargs`. See branch-level comments below
                 for how each recommender type derives (or falls back to a constant for) this value.
@@ -543,15 +557,17 @@ class UserProfileHost():
                                           RecommendationType.HYPERSPHERICAL_MOVING_CENTER,
                                           RecommendationType.HYPERSPHERICAL_BAYESIAN]:
 
-            # we only have an orthonormal basis around the origin 0, so we need to scale by the radius of the
-            # circumscribed hypersphere and translate to its center
-            clip_embeddings = user_embeddings @ self.hyperspherical_basis.T * self.hyperspherical_radius + self.hyperspherical_center
+            clip_embeddings = None
+            if compute_sequence_embeddings:
+                # we only have an orthonormal basis around the origin 0, so we need to scale by the radius of
+                # the circumscribed hypersphere and translate to its center
+                clip_embeddings = user_embeddings @ self.hyperspherical_basis.T * self.hyperspherical_radius + self.hyperspherical_center
 
-            clip_embeddings = self.get_full_text_embeddings(clip_embeddings)
+                clip_embeddings = self.get_full_text_embeddings(clip_embeddings)
 
-            clip_embeddings = slerp(clip_embeddings, self.prompt_embedding.repeat(user_embeddings.shape[0], 1, 1),
-                                    self.original_prompt_share) * torch.linalg.norm(self.prompt_embedding, dim=-1,
-                                                                                    keepdim=True)
+                clip_embeddings = slerp(clip_embeddings, self.prompt_embedding.repeat(user_embeddings.shape[0], 1, 1),
+                                        self.original_prompt_share) * torch.linalg.norm(self.prompt_embedding, dim=-1,
+                                                                                        keepdim=True)
 
             # SDXL MIGRATION: reconstruct the pooled embedding using the SAME per-recommendation
             # coefficients (`user_embeddings`) through the parallel pooled hyperspherical basis
@@ -582,10 +598,10 @@ class UserProfileHost():
         if self.recommendation_type in [RecommendationType.HYPERSPHERICAL_RANDOM,
                                         RecommendationType.HYPERSPHERICAL_MOVING_CENTER,
                                         RecommendationType.HYPERSPHERICAL_BAYESIAN]:
-
-            # no normalization required here since we ensured that the sum of squares of the latent_factors is one,
-            # and thus we don't change the distribution parameters of the normal distribution
-            latents = torch.einsum('rl,lxyz->rxyz', latent_factors, self.latent_axis)
+            if self.n_latent_axis:
+                # no normalization required here since we ensured that the sum of squares of the latent_factors is
+                # one, and thus we don't change the distribution parameters of the normal distribution
+                latents = torch.einsum('rl,lxyz->rxyz', latent_factors, self.latent_axis)
         elif self.recommendation_type == RecommendationType.BASELINE:
             latents = latent_factors
         else:
@@ -672,6 +688,142 @@ class UserProfileHost():
 
         return sequence_embedding.squeeze(0), pooled_embedding.squeeze(0)
 
+    @torch.no_grad()
+    def check_within_hypersphere(self, variation_prompt: str) -> dict:
+        """
+        Checks whether `variation_prompt` (a variation B) lies within the circumscribed
+        hypersphere fit around `self.original_prompt` (prompt A) in the pooled-embedding space,
+        i.e. `self.hyperspherical_center_pooled` / `_radius_pooled` / `_basis_pooled` as fit by
+        `_fit_circumscribed_hypersphere` in load_user_profile_host().
+
+        The center C is only ever found via a linear solve (see `_fit_circumscribed_hypersphere`);
+        the hypersphere/ball itself is the plain Euclidean-norm condition on top of that: project
+        the candidate embedding onto the (n_embedding_axis - 1)-dimensional axis subspace spanned
+        by `hyperspherical_basis_pooled`, then compare its distance from C to the radius.
+
+        NOTE: this only ever measures the in-plane component -- the projection onto the
+        `n_embedding_axis - 1`-dimensional axis subspace, NOT the full pooled-embedding space
+        (1280-dim here; the SD1.5 paper's ambient space is 786-dim). `orthogonal_distance` below
+        is the norm of everything left over after that projection: the (1280 - (n_embedding_axis
+        - 1))-dimensional residual the containment check is blind to. For a handful of fixed axis
+        prompts (e.g. 12), that residual dimensionality dwarfs the subspace being checked, so by
+        plain concentration of measure a generic/unrelated embedding's in-plane component tends to
+        be small (and thus "within") almost by construction, regardless of relatedness to A --
+        check `orthogonal_distance` against `radius` before trusting a "within" verdict.
+
+        Returns:
+            dict with:
+                within (bool): whether the in-plane distance from C is <= the fitted radius.
+                distance (float): in-plane distance minus radius, in embedding-space units
+                    (same units as the radius). <= 0 iff `within`.
+                relative_distance (float): `distance / radius`, i.e. the excess expressed as a
+                    fraction of the radius (unitless, comparable across different fits of A).
+                    <= 0 iff `within`.
+                in_plane_distance (float): ||w||, the raw in-plane distance from C.
+                orthogonal_distance (float): ||(X-C) - Qw||, the residual left over after removing
+                    the in-plane component -- the part of B's displacement from C that isn't in
+                    any of the axis directions at all, and that `within`/`distance` ignore.
+                radius (float): the fitted hyperspherical_radius_pooled, for reference.
+                full_distance (float): the plain Euclidean distance ||X - C|| in the full
+                    pooled-embedding space -- no projection, no decomposition. Equal to
+                    sqrt(in_plane_distance**2 + orthogonal_distance**2) exactly (Pythagorean
+                    theorem for an orthogonal projection), but computed directly so that identity
+                    doesn't have to be trusted.
+                within_full (bool): whether full_distance <= radius.
+                distance_full (float): full_distance - radius. <= 0 iff `within_full`.
+        """
+        assert self.recommendation_type in [RecommendationType.HYPERSPHERICAL_RANDOM,
+                                            RecommendationType.HYPERSPHERICAL_MOVING_CENTER,
+                                            RecommendationType.HYPERSPHERICAL_BAYESIAN], \
+            "check_within_hypersphere requires a HYPERSPHERICAL_* recommendation_type " \
+            "(no circumscribed hypersphere is fit otherwise)."
+
+        _, pooled_embedding = self.clip_embedding(variation_prompt)
+        v = pooled_embedding.float() - self.hyperspherical_center_pooled.float()
+        w = self.hyperspherical_basis_pooled.float().T @ v
+        in_plane_distance = torch.linalg.norm(w).item()
+        orthogonal_distance = torch.linalg.norm(v - self.hyperspherical_basis_pooled.float() @ w).item()
+        radius = float(self.hyperspherical_radius_pooled)
+        distance = in_plane_distance - radius
+        full_distance = torch.linalg.norm(v).item()
+        distance_full = full_distance - radius
+
+        return {
+            "within": distance <= 0,
+            "distance": distance,
+            "relative_distance": distance / radius,
+            "in_plane_distance": in_plane_distance,
+            "orthogonal_distance": orthogonal_distance,
+            "radius": radius,
+            "full_distance": full_distance,
+            "within_full": distance_full <= 0,
+            "distance_full": distance_full,
+        }
+
+    @torch.no_grad()
+    def check_empirical_reach(self, variation_prompt: str, n_samples: int = 1000) -> dict:
+        """
+        Empirically checks whether `variation_prompt` (B) is within reach of what this profile's
+        own recommender could actually produce for `self.original_prompt` (A) — unlike
+        `check_within_hypersphere`, which tests B against the raw, pre-slerp fitted sphere.
+
+        `inv_transform` never hands out a raw sphere point as a real recommendation: every
+        pooled embedding it returns is first slerp'd a fraction `self.original_prompt_share` of
+        the way towards `self.pooled_prompt_embedding` (A's own embedding, not the sphere's
+        center C) and rescaled to A's norm (see inv_transform's HYPERSPHERICAL_* branch). Because
+        that pull is towards a fixed point that generally isn't in the direction of C, it shrinks
+        the sphere non-uniformly — there's no closed-form "effective radius" for it. So instead
+        of solving for one, this samples `n_samples` coefficient vectors exactly like
+        `self.random_recommender` does and pushes them through the real `inv_transform`, then
+        compares B against the resulting empirical distribution of (angular) distances from A.
+
+        Returns:
+            dict with:
+                within (bool): whether B's angle from A is <= the largest sampled angle.
+                distance (float): B's angle from A minus the largest sampled angle (radians).
+                    <= 0 iff `within`.
+                percentile (float): fraction of the n_samples recommendations that are at least
+                    as far (angularly) from A as B is. 0 = B is closer to A than every sample
+                    generated; 1 = B is farther from A than every sample generated.
+                angle_b (float): B's angle from A (radians).
+                sample_angle_min / sample_angle_median / sample_angle_max (float): the empirical
+                    distribution of angle-from-A among the n_samples real recommendations.
+                original_prompt_share (float): the share value actually used, for reference.
+                n_samples (int): as given.
+        """
+        assert self.recommendation_type in [RecommendationType.HYPERSPHERICAL_RANDOM,
+                                            RecommendationType.HYPERSPHERICAL_MOVING_CENTER,
+                                            RecommendationType.HYPERSPHERICAL_BAYESIAN], \
+            "check_empirical_reach requires a HYPERSPHERICAL_* recommendation_type."
+
+        _, pooled_embedding = self.clip_embedding(variation_prompt)
+
+        coeffs = self.random_recommender.recommend_embeddings(user_profile=None, n_recommendations=n_samples)
+        _, sampled_pooled, _ = self.inv_transform(coeffs, compute_sequence_embeddings=False)
+
+        def angle_from_a(x):
+            x = torch.nn.functional.normalize(x.float(), dim=-1)
+            a = torch.nn.functional.normalize(self.pooled_prompt_embedding.float(), dim=-1)
+            cos = torch.clamp((x * a).sum(dim=-1), -1.0, 1.0)
+            return torch.acos(cos)
+
+        angle_b = angle_from_a(pooled_embedding.unsqueeze(0)).item()
+        sample_angles = angle_from_a(sampled_pooled)
+        sample_angle_max = sample_angles.max().item()
+        distance = angle_b - sample_angle_max
+
+        return {
+            "within": distance <= 0,
+            "distance": distance,
+            "percentile": (sample_angles >= angle_b).float().mean().item(),
+            "angle_b": angle_b,
+            "sample_angle_min": sample_angles.min().item(),
+            "sample_angle_median": sample_angles.median().item(),
+            "sample_angle_max": sample_angle_max,
+            "original_prompt_share": float(self.original_prompt_share),
+            "n_samples": n_samples,
+        }
+
     def generate_recommendations(self, num_recommendations: int = 2):
         """
         This function generates recommendations based on the previously fit user-profile.
@@ -749,6 +901,10 @@ class UserProfileHost():
         else:
             # Generate recommendations in the user_space
             if self.user_profile is not None or self.recommendation_type == RecommendationType.BASELINE:
+                if self.recommendation_type == RecommendationType.HYPERSPHERICAL_BAYESIAN:
+                    # keep the recommender's local_search_fraction in sync with the (live-tunable,
+                    # e.g. via the debug menu) value on this host
+                    self.recommender.local_search_fraction = self.local_search_fraction
                 # obtain beta from the recommender if not given
                 user_space_embeddings = self.recommender.recommend_embeddings(user_profile=self.user_profile,
                                                                               n_recommendations=num_recommendations,

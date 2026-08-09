@@ -51,7 +51,11 @@ recommender:
   use_latent_center : False
   ema_alpha : 0.5
   beta: 0.3
-  beta_step_size: 0.1
+  beta_step_size: 0.2
+  # Only used by the HYPERSPHERICAL_BAYESIAN ("active learning") recommender: fraction of each
+  # round's candidate pool sampled locally around the best-rated point so far, instead of
+  # uniformly at random over the whole sphere. 0. disables local sampling (fully global search).
+  local_search_fraction: 0.5
   latent_axes_seed: 42
   recommendation_seed: 43
   initial_recommendation_seed: 44
@@ -68,7 +72,7 @@ recommender:
   # hf_model_name: segmind/SSD-1B instead, use 0.75 — SSD-1B's distilled UNet produces visibly
   # degraded/malformed results at lower shares, seemingly less robust to the wider variety of
   # axis prompts explored at lower values than full SDXL is.
-  original_prompt_share: 0.5
+  original_prompt_share: 0.4
 
 path:
   output_dir: ./output/
