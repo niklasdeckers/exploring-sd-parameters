@@ -1,7 +1,10 @@
 from nicegui import ui as ngUI
 import asyncio
+import base64
 from functools import partial
-import os
+from io import BytesIO
+from pathlib import Path
+from PIL import Image
 
 from prototype.webuserinterface.components.ui_component import UIComponent
 from prototype.constants import WebUIState, ScoreMode
@@ -82,13 +85,24 @@ class MainLoopUI(UIComponent):
         Args:
             image_display: The image display containing the image to save.
         """
-        image_to_save = image_display.source
-        if not os.path.exists(self.webUI.save_path):
-            os.makedirs(self.webUI.save_path)
-        file_name = f"image_{self.webUI.num_images_saved}.png"
-        image_to_save.save(f"{self.webUI.save_path}/{file_name}")
+        # image_display.source is a "data:image/jpeg;base64,..." data URL (see WebUI.update_image_displays'
+        # jpg() helper), not a PIL Image, so it has to be decoded before it can be saved.
+        _, encoded = image_display.source.split(",", 1)
+        image_to_save = Image.open(BytesIO(base64.b64decode(encoded)))
+
+        # self.webUI.save_path is user-editable via the debug menu, so it must be confined to the
+        # configured images save directory to avoid writing to an arbitrary path on the server.
+        base_dir = Path(self.webUI.args.path.images_save_dir).resolve()
+        save_dir = Path(self.webUI.save_path).resolve()
+        if save_dir != base_dir and base_dir not in save_dir.parents:
+            ngUI.notify("Invalid save path: must be inside the images save directory.", type='negative')
+            return
+
+        save_dir.mkdir(parents=True, exist_ok=True)
+        file_path = save_dir / f"image_{self.webUI.num_images_saved}.png"
+        image_to_save.save(file_path)
         self.webUI.num_images_saved += 1
-        ngUI.notify(f"Image saved in {self.webUI.save_path}/{file_name}!")
+        ngUI.notify(f"Image saved in {file_path}!")
 
     async def on_submit_scores_button_click(self):
         """
