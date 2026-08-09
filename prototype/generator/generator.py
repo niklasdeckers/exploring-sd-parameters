@@ -92,13 +92,14 @@ class Generator(GeneratorBase):
         # SDXL MIGRATION: StableDiffusionXLPipeline has no safety_checker component at all (unlike
         # StableDiffusionPipeline), so the safety_checker/requires_safety_checker kwargs that used
         # to be passed here have been dropped rather than repointed.
-        self.pipe = pipe if pipe else StableDiffusionXLPipeline.from_pretrained(
-            hf_model_name,
-            cache_dir=cache_dir,
-            torch_dtype=torch.bfloat16,
-        ).to(device=self.device)
+        if pipe is None:
+            raise NotImplementedError(
+                "Generator requires a pre-built `pipe` (StableDiffusionXLPipeline); "
+                "constructing one internally is not supported."
+            )
+        self.pipe = pipe
 
-        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+        self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
         # SDXL MIGRATION: swapped to the SDXL-specific LCM-LoRA. The SD1.5 LoRA
         # ("latent-consistency/lcm-lora-sdv1-5") targets the single-encoder/768-dim UNet
         # cross-attention layers and is not compatible with SDXL's UNet.
@@ -109,7 +110,7 @@ class Generator(GeneratorBase):
         # applies it correctly at inference, just as a separate low-rank pass alongside the frozen
         # quantized base weights.
         if not getattr(self.pipe.unet, "is_quantized", False):
-            pipe.fuse_lora()
+            self.pipe.fuse_lora()
 
         # self.pipe.unet = torch.compile(self.pipe.unet, backend="cudagraphs")
 
