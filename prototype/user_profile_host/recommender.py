@@ -19,6 +19,13 @@ from .utils import get_unnormalized_value
 
 warnings.simplefilter("ignore", category=InputDataWarning)
 
+# Ceiling for the UCB acquisition function's beta, reached when the user-facing beta (in [0, 1])
+# is 0 (full exploration). Previously 20, which compressed nearly all exploitation-leaning
+# behavior into the top ~1% of the user-facing beta range (e.g. beta=0.9 still left an UCB beta
+# of 2.0, itself still fairly exploration-heavy) -- confirmed empirically to make the
+# exploration/exploitation slider practically unusable across most of its range.
+UCB_BETA_MAX = 4.0
+
 
 class Recommender(ABC):  # ABC = Abstract Base Class
     """
@@ -330,7 +337,7 @@ class BayesianRecommender(Recommender):
             mll = fit_gpytorch_mll(mll)
 
             # Initialize the acquisition function
-            beta = 20 - get_unnormalized_value(beta, 0, 20)
+            beta = UCB_BETA_MAX - get_unnormalized_value(beta, 0, UCB_BETA_MAX)
             acqf = UpperConfidenceBound(model=model, beta=beta, maximize=True)
 
             # Get the highest scoring candidates out of meshgrid
@@ -389,7 +396,7 @@ class BayesianRecommender(Recommender):
         mll = fit_gpytorch_mll(mll)
 
         # Initialize the acquisition function
-        beta = 20 - get_unnormalized_value(beta, 0, 20)
+        beta = UCB_BETA_MAX - get_unnormalized_value(beta, 0, UCB_BETA_MAX)
         acqf = UpperConfidenceBound(model=model, beta=beta, maximize=True)
 
         # Get the highest scoring candidates out of meshgrid
@@ -459,16 +466,35 @@ class HypersphericalMovingCenterRecommender(Recommender):
 
 
 class HypersphericalBayesianRecommender(Recommender):
-    def __init__(self, n_embedding_axis, n_latent_axis, seed: int = 42):
+    def __init__(self, n_embedding_axis, n_latent_axis, seed: int = 42, local_search_fraction: float = 0.5):
+        """
+        :param local_search_fraction: Fraction (in [0, 1]) of each round's candidate pool that is
+            sampled locally around the best-rated point so far, rather than uniformly at random
+            over the whole sphere. 0. reproduces the original global-only search (no local
+            sampling at all); 1. searches only locally. Mutable after construction (e.g. the
+            debug menu binds directly to this attribute), so it can be tuned live.
+        """
         self.generator = torch.Generator()
         self.generator.manual_seed(seed)
         self.n_embedding_axis = n_embedding_axis
         self.n_latent_axis = n_latent_axis
+        assert 0. <= local_search_fraction <= 1., "local_search_fraction should be in range [0., 1.]"
+        self.local_search_fraction = local_search_fraction
 
     def sample_on_unit_sphere(self, n_samples: int, dim: int):
         x = torch.randn(n_samples, dim, generator=self.generator)
         x = x / x.norm(dim=-1, keepdim=True)
         return x
+
+    def sample_near_unit_vector(self, n_samples: int, center: Tensor, radius: float):
+        """Candidates drawn NEAR `center` (perturb + renormalize) instead of uniformly over the
+        whole sphere. In a 30+ dim space, a globally-uniform random pool can only ever get to
+        ~cosine 0.4-0.5 of any fixed preferred direction no matter how many samples are drawn or
+        how the acquisition function is tuned (confirmed empirically) -- recommendations need to
+        search near previously-good points to actually converge onto a preference."""
+        noise = torch.randn(n_samples, center.shape[0], generator=self.generator) * radius
+        points = center.unsqueeze(0) + noise
+        return points / points.norm(dim=-1, keepdim=True)
 
     def recommend_embeddings(self, user_profile: Tensor, n_recommendations: int = 5, beta: float = None) -> Tensor:
         train_X, train_Y = user_profile
@@ -483,12 +509,31 @@ class HypersphericalBayesianRecommender(Recommender):
         mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
         fit_gpytorch_mll(mll)
 
-        beta = 20 - get_unnormalized_value(beta, 0, 20)
-        acqf = qUpperConfidenceBound(model=gp, beta=beta)
+        ucb_beta = UCB_BETA_MAX - get_unnormalized_value(beta, 0, UCB_BETA_MAX)
+        acqf = qUpperConfidenceBound(model=gp, beta=ucb_beta)
 
-        # Sample many candidates
-        candidates = torch.cat((self.sample_on_unit_sphere(10000, self.n_embedding_axis),
-                                self.sample_on_unit_sphere(10000, self.n_latent_axis)), dim=-1)
+        # A `local_search_fraction` share of the candidate pool searches locally around the
+        # best-rated point so far (radius shrinking towards 0 as beta -> 1, i.e. more
+        # exploitation); the rest searches globally at random (for exploration) -- mirrors the
+        # radius = (1 - beta) shrinkage HypersphericalMovingCenterRecommender already uses.
+        # local_search_fraction == 0. skips local sampling entirely, reproducing the original
+        # global-only search.
+        n_total = 10000
+        n_local = round(n_total * self.local_search_fraction)
+        n_global = n_total - n_local
+
+        candidate_parts = []
+        if n_local > 0:
+            radius = max(1.0 - beta, 0.05)
+            best_center = train_X[torch.argmax(train_Y.reshape(-1))]
+            candidate_parts.append(torch.cat((
+                self.sample_near_unit_vector(n_local, best_center[:self.n_embedding_axis], radius),
+                self.sample_near_unit_vector(n_local, best_center[self.n_embedding_axis:], radius),
+            ), dim=-1))
+        if n_global > 0:
+            candidate_parts.append(torch.cat((self.sample_on_unit_sphere(n_global, self.n_embedding_axis),
+                                              self.sample_on_unit_sphere(n_global, self.n_latent_axis)), dim=-1))
+        candidates = torch.cat(candidate_parts, dim=0)
 
         values = acqf(candidates.unsqueeze(1))  # shape [N, 1] for q=1
         topk = torch.topk(values.squeeze(), n_recommendations)

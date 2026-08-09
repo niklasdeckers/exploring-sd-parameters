@@ -154,6 +154,7 @@ class UserProfileHost():
     ema_alpha = binding.BindableProperty()
     beta = binding.BindableProperty()
     beta_step_size = binding.BindableProperty()
+    local_search_fraction = binding.BindableProperty()
     include_random_rec = binding.BindableProperty()
 
     # TODO: Group together Recommender Args and just pass them to the recommender, should simplyfy this arg list
@@ -174,6 +175,7 @@ class UserProfileHost():
             ema_alpha: float = 0.5,
             beta: float = 0.3,
             beta_step_size: float = 0.2,
+            local_search_fraction: float = 0.5,
             latent_axes_seed: int = 42,
             recommendation_seed: int = 42,
             initial_recommendation_seed: int = 43,
@@ -206,6 +208,9 @@ class UserProfileHost():
         :param beta: Trade-off between exploration and exploitation. Must be in [0, 1]. 0 means exploration, 1 means
             exploitation. Beta is increased after each recommendation (i.e. more exploitation).
         :param beta_step_size: The step size for the beta increase.
+        :param local_search_fraction: Only used by the HYPERSPHERICAL_BAYESIAN recommender. Fraction (in [0, 1]) of
+            each round's candidate pool sampled locally around the best-rated point so far, rather than uniformly at
+            random over the whole sphere. 0. disables local sampling entirely (search stays fully global/random).
         """
         # Some Clip Hyperparameters
         self.original_prompt = original_prompt
@@ -229,6 +234,7 @@ class UserProfileHost():
         self.ema_alpha = ema_alpha
         self.beta = min(beta, 1.)
         self.beta_step_size = beta_step_size
+        self.local_search_fraction = local_search_fraction
         self.include_random_rec = include_random_recommendations
         self.axis_style = axis_style
         self.latent_axes_seed = latent_axes_seed
@@ -244,6 +250,7 @@ class UserProfileHost():
         # Check for valid values
         assert self.beta >= 0., "Beta should be in range [0., 1.]"
         assert self.beta_step_size >= 0. and self.beta_step_size < 1., "Beta Step Size should be in [0., 1.]"
+        assert 0. <= self.local_search_fraction <= 1., "Local Search Fraction should be in range [0., 1.]"
 
         # Placeholder for the already evaluated embeddings of the current user
         self.embeddings = None
@@ -450,7 +457,8 @@ class UserProfileHost():
         elif self.recommendation_type == RecommendationType.HYPERSPHERICAL_BAYESIAN:
             self.recommender = HypersphericalBayesianRecommender(n_embedding_axis=self.n_embedding_axis - 1,
                                                                  n_latent_axis=self.n_latent_axis,
-                                                                 seed=self.recommendation_seed)
+                                                                 seed=self.recommendation_seed,
+                                                                 local_search_fraction=self.local_search_fraction)
             self.optimizer = NoOptimizer()
         else:
             raise ValueError(f"The recommendation type {self.recommendation_type} is not implemented yet.")
@@ -893,6 +901,10 @@ class UserProfileHost():
         else:
             # Generate recommendations in the user_space
             if self.user_profile is not None or self.recommendation_type == RecommendationType.BASELINE:
+                if self.recommendation_type == RecommendationType.HYPERSPHERICAL_BAYESIAN:
+                    # keep the recommender's local_search_fraction in sync with the (live-tunable,
+                    # e.g. via the debug menu) value on this host
+                    self.recommender.local_search_fraction = self.local_search_fraction
                 # obtain beta from the recommender if not given
                 user_space_embeddings = self.recommender.recommend_embeddings(user_profile=self.user_profile,
                                                                               n_recommendations=num_recommendations,

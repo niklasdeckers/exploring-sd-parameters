@@ -61,6 +61,7 @@ class DebugMenu(ngUI.element):
                     ("ema_alpha", ngUI.number(label="ema_alpha", min=0, step=0.01).props(self.input_props)),
                     ("beta", ngUI.number(label="beta", min=0, precision=2, step=.01).props(self.input_props)),
                     ("beta_step_size", ngUI.number(label="beta_step_size", min=0, precision=2, step=.01).props(self.input_props)),
+                    ("local_search_fraction", ngUI.number(label="local_search_fraction", min=0, max=1, precision=2, step=.01).props(self.input_props)),
                     ]
         self.toggle_visibility()
 
@@ -70,7 +71,7 @@ class DebugMenu(ngUI.element):
         """
         for attribute, ui_element in self.up_info:
             ui_element.bind_value(self.webUI.user_profile_host, attribute)
-            if attribute not in ["beta", "beta_step_size"]:
+            if attribute not in ["beta", "beta_step_size", "local_search_fraction"]:
                 ui_element.on_value_change(self.webUI.user_profile_host.load_user_profile_host)
     
     def toggle_visibility(self):
